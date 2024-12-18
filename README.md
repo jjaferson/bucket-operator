@@ -6,7 +6,18 @@ Bucket operator is a follow up on my article about Object Storage on Kubernetes 
 
 ## Description
 
-The Bucket Operator providers a managed away to use S3 Buckets on kubernetes clusters, allowing access only to buckets created on an specific namespace prevent users that may not have access to an specify bucket.
+The Bucket Operator providers a managed away to use S3 Buckets on kubernetes clusters, allowing user to create buckets via Kubernetes Custom Resource and interact with them via the S3 API.
+
+By deploying the Bucket CR a bucket is created wit the name of the CR
+
+```yaml
+apiVersion: objectstorage.mystorage.sh/v1alpha1
+kind: Bucket
+metadata:
+  name: bucket-sample4
+spec:
+  name: bucket-sample
+```
 
 ## Getting Started
 
