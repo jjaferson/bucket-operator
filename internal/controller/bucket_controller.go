@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	objectstoragev1alpha1 "mystorage.sh/bucket/api/v1alpha1"
@@ -32,12 +34,14 @@ import (
 // BucketReconciler reconciles a Bucket object
 type BucketReconciler struct {
 	client.Client
+	obj.ObjectStorageClient
 	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=objectstorage.mystorage.sh,resources=buckets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=objectstorage.mystorage.sh,resources=buckets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=objectstorage.mystorage.sh,resources=buckets/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;list;update;delete;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -53,27 +57,47 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	bucket := objectstoragev1alpha1.Bucket{}
 	if err := r.Client.Get(ctx, req.NamespacedName, &bucket); err != nil {
-		if !apierrors.IsNotFound(err) {
-			// If the bucket resource is not found then it usually means that it was deleted or not created
-			// In this way, we will stop the reconciliation
+		if apierrors.IsNotFound(err) {
+			// If the bucket resource is not found, it doesn't exists on the cluster
+			// So we can stop the reconciliation
 			return ctrl.Result{}, nil
 		}
 
-		// returns the error and re-queu the controller
+		// Returns the error and re-queu the controller
 		log.Error(err, "failed to retrieve bucket object")
 		return ctrl.Result{}, err
 	}
 
 	if !bucket.GetDeletionTimestamp().IsZero() {
-		//TODO: delete bucket
+		log.Info("deleting bucket")
+		if err := r.ObjectStorageClient.DeleteBucket(ctx, &bucket); err != nil {
+			log.Error(err, "failed to delete bucket")
+			return ctrl.Result{}, err
+		}
+
+		// Remove finalizer
+		controllerutil.RemoveFinalizer(&bucket, objectstoragev1alpha1.Finalizer)
+		if err := r.Update(ctx, &bucket); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer of the bucket resource: %w", err)
+		}
+		return ctrl.Result{}, nil
 	}
 
-	log.Info("creating bucket")
-	client := obj.NewSeaweedFSClient(r.Client)
-	if err := client.CreateBucket(ctx, &bucket); err != nil {
+	// Add finalizer to prevent resource from being deleted before clean up
+	if !controllerutil.ContainsFinalizer(&bucket, objectstoragev1alpha1.Finalizer) {
+		controllerutil.AddFinalizer(&bucket, objectstoragev1alpha1.Finalizer)
+		if err := r.Update(ctx, &bucket); err != nil {
+			log.Error(err, "failed to add finalizer to bucket resource")
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.ObjectStorageClient.CreateBucket(ctx, &bucket); err != nil {
 		log.Error(err, "failed to create bucket")
 		return ctrl.Result{}, err
 	}
+
+	//TODO: update status with address to access the bucket via API
 
 	return ctrl.Result{}, nil
 }

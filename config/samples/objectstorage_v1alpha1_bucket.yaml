@@ -1,6 +1,6 @@
 apiVersion: objectstorage.mystorage.sh/v1alpha1
 kind: Bucket
 metadata:
-  name: bucket-sample
+  name: bucket-sample4
 spec:
-  name: test
+  name: bucket-sample

@@ -37,6 +37,7 @@ import (
 
 	objectstoragev1alpha1 "mystorage.sh/bucket/api/v1alpha1"
 	"mystorage.sh/bucket/internal/controller"
+	"mystorage.sh/bucket/pkg/objectstorage"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -144,9 +145,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	objectStorageClient := objectstorage.NewSeaweedFSClient(mgr.GetClient())
 	if err = (&controller.BucketReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		ObjectStorageClient: objectStorageClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Bucket")
 		os.Exit(1)

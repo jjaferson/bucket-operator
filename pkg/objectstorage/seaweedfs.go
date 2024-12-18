@@ -2,7 +2,6 @@ package objectstorage
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -16,35 +15,16 @@ import (
 )
 
 const (
-	s3SecretName       = "seaweedfs-s3-secret"
-	seaweedFSNamespace = "seaweedfs-system"
-	s3SecretConfigName = "seaweedfs_s3_config"
-	s3AdminUser        = "anvAdmin"
+	s3SecretName           = "seaweedfs-s3-secret"
+	s3AdminAccessKeyId     = "admin_access_key_id"
+	s3AdminSecretAccessKey = "admin_secret_access_key"
+	seaweedFSNamespace     = "seaweedfs-system"
+	s3AdminUser            = "anvAdmin"
 )
 
 var (
 	s3Endpoint = fmt.Sprintf("http://seaweedfs-s3.%s.svc.cluster.local:8333", seaweedFSNamespace)
 )
-
-type S3Credentials struct {
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-}
-
-type Credentials struct {
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-}
-
-type Identity struct {
-	Name        string        `json:"name"`
-	Credentials []Credentials `json:"credentials"`
-	Actions     []string      `json:"actions"`
-}
-
-type S3Config struct {
-	Identities []Identity `json:"identities"`
-}
 
 type SeaweedFSClient struct {
 	k8sClient k8sClient.Client
@@ -56,26 +36,64 @@ func (client *SeaweedFSClient) CreateBucket(ctx context.Context, bucket *objects
 		return fmt.Errorf("failed to get s3 client instance: %w", err)
 	}
 
-	s3BucketInput := s3.CreateBucketInput{
-		Bucket: aws.String(bucket.GetName()),
-	}
-
-	_, err = s3Client.CreateBucketWithContext(ctx, &s3BucketInput)
+	exists, err := checksBucketExists(ctx, s3Client, bucket.GetName())
 	if err != nil {
 		return fmt.Errorf("failed to create s3 bucket: %w", err)
 	}
+
+	if !exists {
+		_, err = s3Client.CreateBucketWithContext(ctx, &s3.CreateBucketInput{
+			Bucket: aws.String(bucket.GetName()),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create s3 bucket: %w", err)
+		}
+	}
+
 	return nil
 }
 
 func (client *SeaweedFSClient) DeleteBucket(ctx context.Context, bucket *objectstoragev1alpha1.Bucket) error {
+	s3Client, err := client.getS3Instance(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get s3 client instance: %w", err)
+	}
+
+	exists, err := checksBucketExists(ctx, s3Client, bucket.GetName())
+	if err != nil {
+		return fmt.Errorf("failed to delete s3 bucket: %w", err)
+	}
+
+	if exists {
+		_, err = s3Client.DeleteBucketWithContext(ctx, &s3.DeleteBucketInput{
+			Bucket: aws.String(bucket.GetName()),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete s3 bucket: %w", err)
+		}
+	}
+
 	return nil
 }
 
-func (client *SeaweedFSClient) UpdateBucket(ctx context.Context, bucket *objectstoragev1alpha1.Bucket) error {
-	return nil
+func checksBucketExists(ctx context.Context, s3Client *s3.S3, bucketName string) (bool, error) {
+
+	bucketList, err := s3Client.ListBucketsWithContext(ctx, &s3.ListBucketsInput{})
+	if err != nil {
+		return false, fmt.Errorf("failed to list s3 bucket: %w", err)
+	}
+
+	for i := range bucketList.Buckets {
+		bucket := bucketList.Buckets[i]
+		if *bucket.Name == bucketName {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
-func NewSeaweedFSClient(k8sClient k8sClient.Client) ObjectStorage {
+func NewSeaweedFSClient(k8sClient k8sClient.Client) *SeaweedFSClient {
 	return &SeaweedFSClient{
 		k8sClient: k8sClient,
 	}
@@ -88,26 +106,17 @@ func (client *SeaweedFSClient) getS3Instance(ctx context.Context) (*s3.S3, error
 		return nil, fmt.Errorf("failed to load secret %s with s3 credential: %w", s3SecretName, err)
 	}
 
-	s3ConfigBytes, found := secret.Data[s3SecretConfigName]
+	//TODO: get aws cred from volume mount
+	awsId, found := secret.Data[s3AdminAccessKeyId]
 	if !found {
-		return nil, fmt.Errorf("secret %s does not have s3 config key %s", s3SecretName, s3SecretConfigName)
+		return nil, fmt.Errorf("secret %s does not have aws key %s", s3SecretName, s3AdminAccessKeyId)
+	}
+	awsSecret, found := secret.Data[s3AdminSecretAccessKey]
+	if !found {
+		return nil, fmt.Errorf("secret %s does not have aws secret key %s", s3SecretName, s3AdminSecretAccessKey)
 	}
 
-	var s3Config S3Config
-	err = json.Unmarshal(s3ConfigBytes, &s3Config)
-	if err != nil {
-		return nil, fmt.Errorf("could not unmarshal s3 config entry from secret: %w", err)
-	}
-
-	var admUserIdentity *Identity
-	for _, identity := range s3Config.Identities {
-		if identity.Name == s3AdminUser {
-			admUserIdentity = &identity
-			break
-		}
-	}
-
-	creds := awscredentials.NewStaticCredentials(admUserIdentity.Credentials[0].AccessKey, admUserIdentity.Credentials[0].SecretKey, "")
+	creds := awscredentials.NewStaticCredentials(string(awsId), string(awsSecret), "")
 	awsSess, err := awssession.NewSession(&aws.Config{
 		Credentials:      creds,
 		Endpoint:         aws.String(s3Endpoint),

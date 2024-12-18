@@ -20,6 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// Finalizer is the finalizer used by the bucket controller to
+	// cleanup the bucket resources when a Bucket is being deleted.
+	Finalizer = "bucket.objectstorage.mystorage.sh/finalizer"
+)
+
 // BucketSpec defines the desired state of Bucket
 type BucketSpec struct {
 	Name string `json:"name,omitempty"`
